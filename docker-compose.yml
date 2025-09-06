@@ -1,0 +1,22 @@
+version: '3.8'
+
+services:
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - zork_saves:/data/saves
+    environment:
+      - REDIS_HOST=redis
+    depends_on:
+      - redis
+
+  redis:
+    image: "redis:alpine"
+    volumes:
+      - redis_data:/data
+
+volumes:
+  zork_saves:
+  redis_data:
