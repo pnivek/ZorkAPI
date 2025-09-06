@@ -3,6 +3,7 @@ import os
 import json
 import pexpect
 from flask import Flask, jsonify, request
+from flask_cors import CORS
 from redis import Redis
 
 # --- Configuration ---
@@ -11,6 +12,7 @@ REDIS_HOST = os.environ.get('REDIS_HOST', 'redis')
 
 # --- Initialization ---
 app = Flask(__name__)
+CORS(app)
 redis = Redis(host=REDIS_HOST, db=0, socket_connect_timeout=2, socket_timeout=2, decode_responses=True)
 
 # Ensure the save directory exists
