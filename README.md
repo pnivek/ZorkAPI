@@ -214,6 +214,6 @@ A: Yes. All endpoints respond to GET requests using query parameters.
 
 ## Credits
 
-- **Original Author:** [Aristoddle/ZorkAPI](https://github.com/Aristoddle/Zo
+- **Original Author:** [Aristoddle/ZorkAPI](https://github.com/Aristoddle/ZorkAPI)
 
 ---
