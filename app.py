@@ -47,8 +47,16 @@ def save_game(profile, save_file, game):
     # If the save file already exists, the game will ask to overwrite.
     # We check if the save name is in the user's profile to decide.
     email = profile['email']
-    title = save_file.split('.')[1]
-    save_name = ".".join(save_file.split('.')[2:])
+
+    # The original parsing logic `save_file.split('.')` was buggy
+    # because emails can contain dots. This caused `title` and `save_name`
+    # to be parsed incorrectly, leading to the `if save_name in ...` check
+    # to fail. When that check fails, we don't send "yes" to the overwrite
+    # prompt, and the autosave fails.
+    file_without_email = save_file.replace(f"{email}.", "", 1)
+    parts = file_without_email.split('.', 1)
+    title = parts[0]
+    save_name = parts[1] if len(parts) > 1 else ""
 
     if save_name in profile.get(title, []):
         game.expect(['\?', pexpect.EOF, pexpect.TIMEOUT], timeout=5)
