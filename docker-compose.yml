@@ -1,0 +1,28 @@
+services:
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - zork_saves:/data/saves
+    environment:
+      - REDIS_HOST=redis
+    depends_on:
+      - redis
+    networks:
+      - zork-net
+
+  redis:
+    image: "redis:alpine"
+    volumes:
+      - redis_data:/data
+    networks:
+      - zork-net
+
+volumes:
+  zork_saves:
+  redis_data:
+
+networks:
+  zork-net:
+    driver: bridge

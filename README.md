@@ -4,15 +4,33 @@ This is the codebase for the flask-based server that serves ZorkBot, a Bot built
 
 This page also works as a general API definition for the system that it powers.  Read below and [CHECK OUT THE GITHUB-GENERATED WEBSITE](https://aristoddle.github.io/ZorkAPI/) to read more about the system's functionality
 
-## Running/Testing the Code
-* [Python3.6+](https://www.python.org/downloads/) (unique string modificaiton is done that was intruduced in Python 6)
-* [Flask](http://flask.pocoo.org/)
-* [Pexpect](https://pexpect.readthedocs.io/en/stable/)
-* [frotz for Unix](https://gitlab.com/DavidGriffith/frotz), --specifically its *dfrotz* module, from which the process will (manually jump around permisions levels to) can call the dfrotz command
-* [An Azure Virtual Machine](https://azure.microsoft.com/en-us/services/virtual-machines/), or any other unix-based host to serve the application from
+## Running with Docker Compose
 
-## Getting the System Online
-Once you have the app running on a Linux host, you should be able to follow [this guide](https://www.digitalocean.com/community/tutorials/how-to-serve-flask-applications-with-gunicorn-and-nginx-on-ubuntu-18-04) to establish and deploy the application using [Gunicorn](https://gunicorn.org/) and [nginx](https://www.nginx.com/)
+This project is configured to run in Docker containers managed by Docker Compose. This is the recommended way to run the application for development and production.
+
+### Prerequisites
+* [Docker](https://docs.docker.com/get-docker/)
+* [Docker Compose](https://docs.docker.com/compose/install/)
+
+### Instructions
+1.  **Clone the repository:**
+    ```sh
+    git clone <repository-url>
+    cd ZorkAPI
+    ```
+
+2.  **Start the application stack:**
+    ```sh
+    docker-compose up --build
+    ```
+    This command will build the Docker image for the API, download the Redis image, and start both containers. The API will be available at `http://localhost:8000`.
+
+3.  **Stopping the application:**
+    To stop the application, press `Ctrl+C` in the terminal where `docker-compose` is running, and then run:
+    ```sh
+    docker-compose down
+    ```
+    This will stop and remove the containers. The volumes for Redis data and game saves will be preserved.
 
 ## Core Profile Object
 Each time we hit the endpoint an object of the following form is loaded into the Flask server from a pickly files named `profiles.pickle`. It is a general representation of user state, holding a list of save files for the 6 games emulated, a secondary reference to the email which is used as a key to find this object, and a record of the last game that the user was playing.  This object is returned by most endpoints (along with secondary payloads depending on the endpoint's function), and is used to ensure consistency between the client and the server.*
