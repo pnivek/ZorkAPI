@@ -93,7 +93,7 @@ def start_game(title):
     if not title in game_files:
         title = 'zork1'
 
-    command = f"dfrotz -mp {game_path}"
+    command = f"/usr/games/dfrotz -mp {game_path}"
     game = pexpect.spawn(command)
     return game, title
 
