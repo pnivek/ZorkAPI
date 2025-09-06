@@ -1,188 +1,219 @@
-Check out the [GitHub Site](https://aristoddle.github.io/ZorkAPI/) for this project.  The colors are bad but it's much more readable.
 # ZorkAPI
-This is the codebase for the flask-based server that serves ZorkBot, a Bot built on the Microsoft Bot Framework to modernize and make accessable Interactive Fiction games from the DOS era.
 
-This page also works as a general API definition for the system that it powers.  Read below and [CHECK OUT THE GITHUB-GENERATED WEBSITE](https://aristoddle.github.io/ZorkAPI/) to read more about the system's functionality
+A RESTful **GET-based** API server for playing classic Infocom text adventure games (Z-machine format), with robust support for persistent save files, sessionless user state, and bot/web integration.
 
-## Running with Docker Compose
+---
 
-This project is configured to run in Docker containers managed by Docker Compose. This is the recommended way to run the application for development and production.
+## Table of Contents
+
+- [Overview](#overview)
+- [Installation & Deployment](#installation--deployment)
+- [Supported Games](#supported-games)
+- [API Lifecycle: How to Play](#api-lifecycle-how-to-play)
+- [Endpoints Reference](#endpoints-reference)
+- [Save, Restore, and Persistence](#save-restore-and-persistence)
+- [Example Walkthroughs (with GET requests)](#example-walkthroughs-with-get-requests)
+- [Game-Specific Notes](#game-specific-notes)
+- [FAQ](#faq)
+
+---
+
+## Overview
+
+ZorkAPI exposes a web API for playing classic Infocom games (Zork I/II/III, etc.) with persistent, per-user state. All access is via HTTP GET requests—perfect for low-friction bot, assistant, and web integration.  
+_Game state and saves are tracked per user (by email) for each game title._
+
+---
+
+## Installation & Deployment
 
 ### Prerequisites
-* [Docker](https://docs.docker.com/get-docker/)
-* [Docker Compose](https://docs.docker.com/compose/install/)
 
-### Instructions
-1.  **Clone the repository:**
-    ```sh
-    git clone <repository-url>
-    cd ZorkAPI
-    ```
+- Docker + Docker Compose (recommended)
+- Redis (managed by Compose for fast state access)
 
-2.  **Start the application stack:**
-    ```sh
-    docker-compose up --build
-    ```
-    This command will build the Docker image for the API, download the Redis image, and start both containers. The API will be available at `http://localhost:8000`.
+### Quickstart
 
-3.  **Stopping the application:**
-    To stop the application, press `Ctrl+C` in the terminal where `docker-compose` is running, and then run:
-    ```sh
-    docker-compose down
-    ```
-    This will stop and remove the containers. The volumes for Redis data and game saves will be preserved.
-
-## Core Profile Object
-Each time we hit the endpoint an object of the following form is loaded into the Flask server from a pickly files named `profiles.pickle`. It is a general representation of user state, holding a list of save files for the 6 games emulated, a secondary reference to the email which is used as a key to find this object, and a record of the last game that the user was playing.  This object is returned by most endpoints (along with secondary payloads depending on the endpoint's function), and is used to ensure consistency between the client and the server.*
-
-```python
-profileObjectExample = {
-    "hike": ["hike save files"],
-    "spell": ["spell save files"],
-    "wish": ["wish save files"],
-    "zork1": ["zork1 files"],
-    "zork2": ["zork2 files"],
-    "zork3": ["zork3 files"],
-    "email": "User Email",
-    "lastGame": [None or "last_game_played"]
-} 
 ```
 
-# Core API Endpoints
+git clone https://github.com/pnivek/ZorkAPI.git
+cd ZorkAPI
+docker-compose up --build
 
-## /user
-
-### General Description:
- 
-This endpoint is called when a user first pings the server.   If a user profile object (as defined above) exists for that email or account name, it will be returned.
-
-### Example Call:
-
-`/user?email=user_email`
-
-### Return Object:
-
-```python
-returnObject = { 
-    'newUser': bool, #representing whether the user was already in the system 
-    'profile': Object, #the core profile object described in the above section
-}
-```
- 
-### Arguments:
-
-**email**: the email of the given user, will either be pulled directly from device that the user uses to access the API, or will be provided by the user after a short dialogue.  Used to organize persistent save files for a user, and allows them to user the system statelesslessly
-
-## /start
-
-### General Description:
- 
-This endpoint is called when a user tries to load a game other than the 'New Game' placeholder.  This will allow the user to write to from that save file forward  in later `/action` calls.
-
-### Example Call:
-
-`/start?email=user_email&title=game_title&save=safeFile`
-
-### Return Object:
-
-```python
-returnObject = { 
-    'titleInfo': String, # Represents the first few lines of the game, up until the licensing information, etc 
-    'firstLine': String, # Represents the first actual line of gameplay Information.  THe text between the end of the title info, and the first `>` input prompt
-    'profile': Object,   # The core profile object described in the above section
-}
 ```
 
-### Arguments:
+The API will be available at:  
+`http://localhost:8000`
 
-**email**: the email of the given user, will either be pulled directly from device that the user uses to access the API, or will be provided by the user after a short dialogue.  Used to organize persistent save files for a user, and allows them to user the system statelesslessly
- 
-**title**: The title of the game that the user is playing.  Needed so that dfrotz can be used to spin up an instance of the right game for the user to play
-
-**save**: The name of the specific saveFile that the user is trying to load.  After each turn in-game, the state is saved, the model object is updated, the game is closed, and the response is sent back to the user.  Normally, that most-recent save is stored at a  location called `AutoSave`, but through an explicit save dialog (see below), they can also set fixed save points within the story.  With the `/save` command, it is possible to create explicitly defined savefiles to load with this function.
-
-## /newGame
-
-### General Description:
- 
-This endpoint is called when a user tries to load a game titled with the'New Game' placeholder.  The server will init that game, delete any potential AutoSaves for the game, and move the AutoSave head to the first state in the game (move 0).  This will allow the user to write to from that save file forward  in later `/action` calls.
-
-### Example Call:
-
-`/newGame?email=user_email&title=game_title`
-
-### Return Object:
-
-```python
-returnObject = { 
-    'titleInfo': String,    # Represents the first few lines of the game, up until the licensing information, etc 
-    'firstLine': String,    # Represents the first actual line of gameplay Information.  THe text between the end of the title info, and the first `>` input prompt
-    'profile': Object,      # The core profile object described in the above section
-}
-```
- 
-### Arguments:
-
-**email**: the email of the given user, will either be pulled directly from device that the user uses to access the API, or will be provided by the user after a short dialogue.  Used to organize persistent save files for a user, and allows them to user the system statelesslessly
- 
-**title**: The title of the game that the user is playing.  Needed so that dfrotz can be used to spin up an instance of the right game for the user to play
-
-## /action
-
-### General Description:
-
-This call sits are the heart of the core gameplay loop for the server.  This is called after `/start` or `/newGame` have initialized a game state and set the position for the AutoSave.  It will load the AutoSave into the system, execute the given action, update the AutoSave, and then save the game before returning.  
-
-### Example Call:
-
-`/newGame?email=user_email&title=game_title`
-
-### Return Object:
-
-```python
-returnObject = {
-        "cmdOutput":        String,     # The game's response to the input user command
-        "lookOutput":       String,     # The line returned upon loading the save to the user's expected state; unused, but may be of future value
-        "userProfile":      Object,     # The core profile object described in the above section
-    }
+To stop:
 ```
 
-### Arguments: 
+Ctrl+C \# in the running window
+docker-compose down
 
-**email**: the email of the given user, will either be pulled directly from device that the user uses to access the API, or will be provided by the user after a short dialogue.  Used to organize persistent save files for a user, and allows them to user the system statelesslessly
- 
-**title**: The title of the game that the user is playing.  Needed so that dfrotz can be used to spin up an instance of the right game for the user to play
-
-## /save
-
-### General Description:
-
-This endpoint allows the bot to create an explicit, uniquely named safefile.  This is done through sending a series of commands to the game client, but it was important to wrap the call uniquely, as the save interface is somewhat distinct from the interace leveraged by the `/action` pathway 
-
-### Example Call:
-`/save?email=user_email&title=game_title&save=safeFile`
-
-### Return Object:
-```python
-# note that Save just returns the base ProfileObject.  After the Save command is submitted, the game 
-# loops back to its core action loop, and doesn't take any response-specific actions.  The object is 
-# primarly returned so that I can ensure consistency between the client and the server.
-profileObjectExample = {
-    "hike": ["hike save files"],
-    "spell": ["spell save files"],
-    "wish": ["wish save files"],
-    "zork1": ["zork1 files"],
-    "zork2": ["zork2 files"],
-    "zork3": ["zork3 files"],
-    "email": "User Email",
-    "lastGame": [None or "last_game_played"]
-} 
 ```
 
-### Arguments: 
+---
 
-**email**: the email of the given user, will either be pulled directly from device that the user uses to access the API, or will be provided by the user after a short dialogue.  Used to organize persistent save files for a user, and allows them to user the system statelesslessly
- 
-**title**: The title of the game that the user is playing.  Needed so that dfrotz can be used to spin up an instance of the right game for the user to play
+## Supported Games
 
-**save**: The name of the specific saveFile that the user hopes to create.  After each turn in-game, the state is saved, the model object is updated, the game is closed, and the response is sent back to the user.  After each turn, the game is saved by a non-public function as an overwrite of the AutoSave file, `AutoSave`, but through this dialog, it is possible to set a 'restore point' of sorts for you to return to in the future.
+- zork1 (ZORK I)
+- zork2 (ZORK II)
+- zork3 (ZORK III)
+- spell, hike, wish* (other compatible Z-machine story files)
+
+---
+
+## API Lifecycle: How to Play
+
+**All API calls use HTTP GET with query parameters.**
+
+### 1. User Profile
+
+Initialize or retrieve your profile:
+```
+
+GET /user?email=your_email
+
+```
+
+---
+
+### 2. Start a New Game
+
+Begin a new adventure and reset progress:
+```
+
+GET /newGame?email=your_email\&title=zork1
+
+```
+
+- 'title' is the game name (e.g., zork1, zork2, ...)
+
+---
+
+### 3. Core Gameplay Loop: Take Actions
+
+For each move, call:
+```
+
+GET /action?email=your_email\&title=zork1\&action=open mailbox
+GET /action?email=your_email\&title=zork1\&action=take leaflet
+GET /action?email=your_email\&title=zork1\&action=inventory
+GET /action?email=your_email\&title=zork1\&action=look
+
+```
+- Each call updates game state and persists progress (AutoSave).
+
+---
+
+### 4. Save & Restore (Named Save Points)
+
+Save to a named checkpoint:
+```
+
+GET /save?email=your_email\&title=zork1\&save=SafePoint1
+
+```
+Resume from a named save:
+```
+
+GET /start?email=your_email\&title=zork1\&save=SafePoint1
+
+```
+- Resumes and future `/action` calls will persist from that point.
+
+---
+
+## Endpoints Reference
+
+### `/user`
+**GET /user?email=your_email**  
+- Returns your profile and save slots.
+
+---
+### `/newGame`
+**GET /newGame?email=your_email&title=game_title**  
+- Starts a fresh game, wipes progress for that title, creates a new AutoSave.
+
+---
+### `/action`
+**GET /action?email=your_email&title=game_title&action=your_command**  
+- Submits a Zork command (turn), updates state, and returns prompt/game response.
+
+---
+### `/save`
+**GET /save?email=your_email&title=game_title&save=save_name**  
+- Saves your current spot under the given name.
+
+---
+### `/start`
+**GET /start?email=your_email&title=game_title&save=save_name**  
+- Loads a named save and sets it as AutoSave for future play.
+
+---
+
+## Save, Restore, and Persistence
+
+- **AutoSave**: Each `/action` rewrites your per-user/game “AutoSave” (autosave progress).
+- **Explicit named saves**: Use `/save` and `/start` for custom restore points, great for tricky sections or backtracking.
+
+---
+
+## Example Walkthroughs (with GET requests)
+
+### Zork I (Mailbox & Leaflet)
+
+```
+
+curl "http://localhost:8000/user?email=foo@bar.com"
+curl "http://localhost:8000/newGame?email=foo@bar.com\&title=zork1"
+curl "http://localhost:8000/action?email=foo@bar.com\&title=zork1\&action=open mailbox"
+curl "http://localhost:8000/action?email=foo@bar.com\&title=zork1\&action=take leaflet"
+curl "http://localhost:8000/action?email=foo@bar.com\&title=zork1\&action=inventory"
+curl "http://localhost:8000/action?email=foo@bar.com\&title=zork1\&action=look"
+curl "http://localhost:8000/save?email=foo@bar.com\&title=zork1\&save=LeafletCheckpoint"
+
+```
+
+### Zork II (Lantern)
+
+```
+
+curl "http://localhost:8000/newGame?email=foo@bar.com\&title=zork2"
+curl "http://localhost:8000/action?email=foo@bar.com\&title=zork2\&action=take lantern"
+curl "http://localhost:8000/action?email=foo@bar.com\&title=zork2\&action=inventory"
+
+```
+
+---
+
+## Game-Specific Notes
+
+- **title** must match a supported game (e.g., zork1, zork2).
+- Objects available for actions depend on the selected game; e.g., 'mailbox' exists only in Zork I.
+- All your state is managed by your email as your unique ID—no cookies or sessions required.
+
+---
+
+## FAQ
+
+**Q: Are saves/turns persisted between sessions or browsers?**  
+A: Yes. All progress is by email+game, and the API is stateless.
+
+**Q: Can I play multiple games at once?**  
+A: Yes, every game’s state is saved independently.
+
+**Q: What if I use the wrong object/action?**  
+A: The game’s own parser will respond (e.g., “I don’t know the word...” or similar). Refer to Infocom documentation for vocabulary.
+
+**Q: Are all client/server actions GET?**  
+A: Yes. All endpoints respond to GET requests using query parameters.
+
+---
+
+## Credits
+
+- **Original Author:** [Aristoddle/ZorkAPI](https://github.com/Aristoddle/Zo
+
+---
