@@ -19,6 +19,8 @@ if not os.environ.get('GAME_TOKEN_SECRET'):
 TOKEN_VERSION = 0x01
 DFROTZ_PATH = '/usr/games/dfrotz'
 PEXPECT_TIMEOUT = 5
+PROMPT = '\r\n>'  # dfrotz prompt: newline followed by ">". More specific than bare ">"
+                   # to avoid false matches on ">" appearing in game text.
 
 GAME_FILES = {
     'hike':  'Games/HitchHikers/hhgg.z3',
@@ -87,7 +89,7 @@ def get_intro_text(game):
     """Consume and return the intro text dfrotz prints on startup."""
     game.expect('Serial [n|N]umber [0-9]+', timeout=PEXPECT_TIMEOUT)
     title_info = game.before.decode('utf-8', errors='replace') + game.after.decode('utf-8', errors='replace')
-    index = game.expect(['>', pexpect.EOF, pexpect.TIMEOUT], timeout=PEXPECT_TIMEOUT)
+    index = game.expect([PROMPT, pexpect.EOF, pexpect.TIMEOUT], timeout=PEXPECT_TIMEOUT)
     if index == 1:
         raise RuntimeError("Game process ended unexpectedly during intro")
     if index == 2:
@@ -102,10 +104,10 @@ def save_to_file(game, save_path):
     game.expect(':', timeout=PEXPECT_TIMEOUT)
     game.sendline(save_path)
     # Handle both cases: overwrite prompt or direct success
-    index = game.expect([r'\?', '>', pexpect.EOF, pexpect.TIMEOUT], timeout=PEXPECT_TIMEOUT)
+    index = game.expect([r'\?', PROMPT, pexpect.EOF, pexpect.TIMEOUT], timeout=PEXPECT_TIMEOUT)
     if index == 0:  # Overwrite prompt
         game.sendline("yes")
-        idx2 = game.expect(['>', pexpect.EOF, pexpect.TIMEOUT], timeout=PEXPECT_TIMEOUT)
+        idx2 = game.expect([PROMPT, pexpect.EOF, pexpect.TIMEOUT], timeout=PEXPECT_TIMEOUT)
         if idx2 != 0:
             raise RuntimeError("Failed to save game after overwrite confirmation")
     elif index >= 2:
@@ -117,7 +119,7 @@ def restore_from_file(game, save_path):
     game.sendline("restore")
     game.expect(':', timeout=PEXPECT_TIMEOUT)
     game.sendline(save_path)
-    index = game.expect(['>', pexpect.EOF, pexpect.TIMEOUT], timeout=PEXPECT_TIMEOUT)
+    index = game.expect([PROMPT, pexpect.EOF, pexpect.TIMEOUT], timeout=PEXPECT_TIMEOUT)
     if index == 1:
         raise RuntimeError("Game process ended unexpectedly during restore")
     if index == 2:
@@ -203,22 +205,34 @@ def action():
         get_intro_text(game)  # must consume intro before restore
         restore_from_file(game, restore_path)
 
-        # Execute the player's command
+        # Execute the player's command.
+        # Some games have interactive mid-command prompts (e.g. HHGG's "score"
+        # pauses for RETURN). We retry on timeout by sending a blank line.
         game.sendline(action_cmd)
-        index = game.expect(['>', pexpect.EOF, pexpect.TIMEOUT], timeout=PEXPECT_TIMEOUT)
-        output = game.before.decode('utf-8', errors='replace').strip()
+        output_parts = []
+        game_over = False
+        for _attempt in range(3):
+            index = game.expect([PROMPT, pexpect.EOF, pexpect.TIMEOUT], timeout=PEXPECT_TIMEOUT)
+            output_parts.append(game.before.decode('utf-8', errors='replace'))
+            if index == 0:  # Got the real prompt
+                break
+            elif index == 1:  # EOF — game ended
+                game_over = True
+                break
+            else:  # TIMEOUT — might be an intermediate prompt waiting for input
+                game.sendline("")
+        else:
+            raise RuntimeError("Game did not respond to action")
 
-        # If the game ended (player died, quit, etc.), return output with no new game token
-        if index == 1:  # EOF
+        output = "\n".join(output_parts).strip()
+
+        if game_over:
             return jsonify({
                 "game_token": None,
                 "output": output,
                 "title": title,
                 "game_over": True,
             })
-
-        if index == 2:  # TIMEOUT
-            raise RuntimeError("Game did not respond to action in time")
 
         # Save new state to temp file, read back
         fd, save_path = tempfile.mkstemp(suffix='.qzl')

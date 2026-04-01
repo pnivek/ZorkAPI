@@ -11,22 +11,21 @@ The game token is a compressed, signed snapshot of the Z-machine's memory at a g
 Think of it like those old Flash game passwords — except the token actually contains your full save, not just a lookup key.
 
 ```
-Client                          Server
-  |                               |
-  |  POST /new_game {title}       |
-  |------------------------------>|
-  |                               |  spawn dfrotz, capture intro
-  |  {game_token, output}          |
-  |<------------------------------|
-  |                               |
-  |  POST /action {game_token,     |
-  |                action}        |
-  |------------------------------>|
-  |                               |  decode game_token, restore state,
-  |                               |  execute action, encode new state
-  |  {game_token, output}          |
-  |<------------------------------|
-  |                               |
+Client                                Server
+  |                                     |
+  |  POST /new_game {title}             |
+  |------------------------------------>|
+  |                                     |  spawn dfrotz, capture intro
+  |  {game_token, output}               |
+  |<------------------------------------|
+  |                                     |
+  |  POST /action {game_token, action}  |
+  |------------------------------------>|
+  |                                     |  decode, restore, execute,
+  |                                     |  save, encode new token
+  |  {game_token, output}               |
+  |<------------------------------------|
+  |                                     |
 ```
 
 Clients can store multiple game tokens in browser localStorage (or anywhere) to implement save slots, undo, branching — whatever they want.
