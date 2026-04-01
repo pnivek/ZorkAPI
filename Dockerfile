@@ -21,14 +21,11 @@ COPY . .
 # Create a non-root user and group
 RUN addgroup --system app && adduser --system --group app
 
-# Create and set permissions for the data directory
-RUN mkdir -p /data/saves && chown -R app:app /data
-
 # Switch to the non-root user
 USER app
 
 # Expose the port the app runs on
 EXPOSE 8000
 
-# Run the application
-CMD ["gunicorn", "--workers", "4", "--bind", "0.0.0.0:8000", "app:app"]
+# Run the application (--preload ensures all workers share the same HMAC secret)
+CMD ["gunicorn", "--preload", "--workers", "4", "--bind", "0.0.0.0:8000", "app:app"]
