@@ -1,3 +1,0 @@
-!#/bin/sh
-sudo systemctl restart pythonserver
-sudo systemctl status pythonserver

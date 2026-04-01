@@ -1,273 +1,262 @@
 #!/usr/bin/python3
-import errno
 import os
-import os.path
-import pickle
-import socket
-import subprocess 
-from string import Template
-from subprocess import PIPE, Popen
-
+import zlib
+import hmac
+import hashlib
+import base64
+import tempfile
 import pexpect
 from flask import Flask, jsonify, request
-from redis import Redis, RedisError
+from flask_cors import CORS
 
-import platform
+# --- Configuration ---
+HMAC_SECRET = os.environ.get('GAME_TOKEN_SECRET', '').encode() or os.urandom(32)
+if not os.environ.get('GAME_TOKEN_SECRET'):
+    print("WARNING: GAME_TOKEN_SECRET not set. Generated ephemeral key. "
+          "Tokens will not survive server restart, and may fail across workers "
+          "unless gunicorn --preload is used.")
 
-USER_PROFILES_FILE = './profiles.pickle'
-profiles_TYPE = 'filesystem'
-# ROOT_PATH = '/home/J3lanzone/LinuxSaves' if (platform.system() == "Linux") else "C:\\Users\\J3lan\\OneDrive\\Documents\\Code\\ZorkAPI\\WindowsSaves"
+TOKEN_VERSION = 0x01
+DFROTZ_PATH = '/usr/games/dfrotz'
+PEXPECT_TIMEOUT = 5
+PROMPT = '\r\n>'  # dfrotz prompt: newline followed by ">". More specific than bare ">"
+                   # to avoid false matches on ">" appearing in game text.
 
-# Connect to Redis 
-# redis = Redis(host="redis", db=0, socket_connect_timeout=2, socket_timeout=2)
-app = Flask(__name__)
-app.config.from_object(__name__)
-
-
-# define response object to say: 
-# person has some save files 
-# here's what they are
-# here's how many there are?
-
-profileObjectExample = {
-    "hike": ["hike save files"],
-    "spell": ["spell save files"],
-    "wish": ["wish save files"],
-    "zork1": ["zork1 files"],
-    "zork2": ["zork2 files"],
-    "zork3": ["zork3 files"],
-    "email": "User Email",
-    "lastGame": [None or "last_game_played"]
+GAME_FILES = {
+    'hike':  'Games/HitchHikers/hhgg.z3',
+    'spell': 'Games/Spellbreaker/spellbre.dat',
+    'wish':  'Games/Wishbringer/wishbrin.dat',
+    'zork1': 'Games/Zork1/zork1.z5',
+    'zork2': 'Games/Zork2/zork2.dat',
+    'zork3': 'Games/Zork3/ZORK3.DAT',
 }
 
-def loadProfiles():
+# --- Initialization ---
+app = Flask(__name__)
+CORS(app)
+
+
+# --- Token Encoding/Decoding ---
+def encode_game_token(game_id, save_bytes):
+    """Encode a Quetzal save file into a signed, compressed game token string."""
+    game_id_bytes = game_id.encode('ascii')
+    payload = bytes([TOKEN_VERSION, len(game_id_bytes)]) + game_id_bytes + zlib.compress(save_bytes, 9)
+    mac = hmac.new(HMAC_SECRET, payload, hashlib.sha256).digest()
+    return base64.urlsafe_b64encode(payload + mac).decode('ascii')
+
+
+def decode_game_token(token):
+    """Decode a game token string back into (game_id, save_bytes). Raises ValueError on invalid tokens."""
     try:
-        with open(USER_PROFILES_FILE, 'rb') as f:
-            profiles = pickle.load(f)
-    except:
-        profiles = {}
-    return profiles
+        raw = base64.urlsafe_b64decode(token)
+    except Exception:
+        raise ValueError("Invalid game token: bad encoding")
 
-def dumpProfiles(profiles, email, title, game, saveFile="AutoSave"):
-    print(f"dumping... email: {email}, title: {title}, savefile: {saveFile}")
-    if (title):
-        profiles[email]["lastGame"] = title   
-        
-        if (not saveFile in profiles[email][title]):
-            print(f"saveFile not found... adding")
-            profiles[email][title].append(saveFile)
-        else:
-            print(f"saveFile found.. {saveFile} in {profiles[email][title]}")
-    print(f"new profiles: {profiles}")
-    with open(USER_PROFILES_FILE, 'wb') as f:
-        pickle.dump(profiles, f)
+    if len(raw) < 36:  # 1 + 1 + 1 (min game_id) + 1 (min zlib) + 32 (hmac)
+        raise ValueError("Invalid game token: too short")
 
-def saveGame(profiles, saveFile, game):
-    print(f"\n\n SAVEGAME CALLED:  {saveFile}\n\n")
-    game.sendline(f"save")
-    game.expect(':')
-    prompt = game.before.decode('utf-8')
-    game.sendline(saveFile)
-    entries = saveFile.split(".")
-    if (entries[2] in profiles[entries[0]][entries[1]]):
-        game.expect(['\?', pexpect.EOF, pexpect.TIMEOUT], timeout=5)
+    payload, received_mac = raw[:-32], raw[-32:]
+    expected_mac = hmac.new(HMAC_SECRET, payload, hashlib.sha256).digest()
+    if not hmac.compare_digest(received_mac, expected_mac):
+        raise ValueError("Invalid game token: signature mismatch")
+
+    version = payload[0]
+    if version != TOKEN_VERSION:
+        raise ValueError(f"Invalid game token: unsupported version {version}")
+
+    game_id_len = payload[1]
+    game_id = payload[2:2 + game_id_len].decode('ascii')
+    compressed = payload[2 + game_id_len:]
+
+    try:
+        save_bytes = zlib.decompress(compressed)
+    except zlib.error:
+        raise ValueError("Invalid game token: corrupt data")
+
+    return game_id, save_bytes
+
+
+# --- Frotz Interaction Helpers ---
+def spawn_game(game_id):
+    """Spawn a new dfrotz process for the given game."""
+    if game_id not in GAME_FILES:
+        raise ValueError(f"Unknown game '{game_id}'. Available: {list(GAME_FILES.keys())}")
+    game_path = GAME_FILES[game_id]
+    return pexpect.spawn(f"{DFROTZ_PATH} -mp {game_path}", encoding=None)
+
+
+def get_intro_text(game):
+    """Consume and return the intro text dfrotz prints on startup."""
+    game.expect('Serial [n|N]umber [0-9]+', timeout=PEXPECT_TIMEOUT)
+    title_info = game.before.decode('utf-8', errors='replace') + game.after.decode('utf-8', errors='replace')
+    index = game.expect([PROMPT, pexpect.EOF, pexpect.TIMEOUT], timeout=PEXPECT_TIMEOUT)
+    if index == 1:
+        raise RuntimeError("Game process ended unexpectedly during intro")
+    if index == 2:
+        raise RuntimeError("Game did not produce a prompt after intro")
+    first_line = game.before.decode('utf-8', errors='replace')
+    return title_info, first_line
+
+
+def save_to_file(game, save_path):
+    """Send the save command to dfrotz and write the state to save_path."""
+    game.sendline("save")
+    game.expect(':', timeout=PEXPECT_TIMEOUT)
+    game.sendline(save_path)
+    # Handle both cases: overwrite prompt or direct success
+    index = game.expect([r'\?', PROMPT, pexpect.EOF, pexpect.TIMEOUT], timeout=PEXPECT_TIMEOUT)
+    if index == 0:  # Overwrite prompt
         game.sendline("yes")
-    game.expect(['>', pexpect.EOF, pexpect.TIMEOUT], timeout=.2)
-    response = game.before.decode('utf-8')
+        idx2 = game.expect([PROMPT, pexpect.EOF, pexpect.TIMEOUT], timeout=PEXPECT_TIMEOUT)
+        if idx2 != 0:
+            raise RuntimeError("Failed to save game after overwrite confirmation")
+    elif index >= 2:
+        raise RuntimeError("Failed to save game")
 
-def restoreSave(saveFile, game):
-    print(f"\n\n\nRESTORE SAVE CALLED\n {saveFile}\n\n\n")
-    titleInfo, firstLine = getFirstLines(game)
+
+def restore_from_file(game, save_path):
+    """Send the restore command to dfrotz to load state from save_path."""
     game.sendline("restore")
-    game.expect(':')
-    trash = game.before.decode('utf-8')
-    game.sendline(saveFile)
-    game.expect(['>', pexpect.EOF, pexpect.TIMEOUT], timeout=.2)
-    trash = game.before.decode('utf-8')
-    outputs = {
-        "titleInfo": titleInfo,
-        "firstLine": firstLine
-    }
-    return(outputs)
+    game.expect(':', timeout=PEXPECT_TIMEOUT)
+    game.sendline(save_path)
+    index = game.expect([PROMPT, pexpect.EOF, pexpect.TIMEOUT], timeout=PEXPECT_TIMEOUT)
+    if index == 1:
+        raise RuntimeError("Game process ended unexpectedly during restore")
+    if index == 2:
+        raise RuntimeError("Game did not respond after restore")
 
-def getFirstLines(game):
-    print(f"\n\n\nGET FIRST LINE CALLED\n {game}\n\n\n")
-    game.expect('Serial [n|N]umber [0-9]+')
-    titleInfo = game.before.decode('utf-8')
-    titleInfo += game.after.decode('utf-8')
-    game.expect(['>', pexpect.EOF, pexpect.TIMEOUT], timeout=.2)
-    firstLine = game.before.decode('utf-8')
-    return (titleInfo, firstLine)
 
-def startGame(title):
-    print(f"\n\n\nSPAWN GAME CALLED\n {title}\n\n\n")
-    if (title == 'hike'):
-        game = pexpect.spawn('/home/J3lanzone/frotz/dfrotz -mp /home/J3lanzone/Games/HitchHikers/hhgg.z3')
-    elif (title == 'spell'):
-        game = pexpect.spawn('/home/J3lanzone/frotz/dfrotz -mp /home/J3lanzone/Games/Spellbreaker/spellbre.dat')
-    elif (title == 'wish'):
-        game = pexpect.spawn('/home/J3lanzone/frotz/dfrotz -mp /home/J3lanzone/Games/Wishbringer/wishbrin.dat')
-    elif (title == 'zork1'):
-        game = pexpect.spawn('/home/J3lanzone/frotz/dfrotz -mp /home/J3lanzone/Games/Zork1/zork1.z5')
-    elif (title == 'zork2'):
-        game = pexpect.spawn('/home/J3lanzone/frotz/dfrotz -mp /home/J3lanzone/Games/Zork2/zork2.dat')
-    elif (title == 'zork3'):
-        game = pexpect.spawn('/home/J3lanzone/frotz/dfrotz -mp /home/J3lanzone/Games/Zork3/ZORK3.DAT')
-    else:
-        print("miss")
-        game = pexpect.spawn('/home/J3lanzone/frotz/dfrotz -mp /home/J3lanzone/Games/Zork1/zork1.z5')
-        title = 'zork1'
+# --- API Endpoints ---
+@app.route("/games", methods=["GET"])
+def list_games():
+    """List all available games."""
+    return jsonify({"games": list(GAME_FILES.keys())})
 
-    return (game, title)
 
-@app.route("/user", methods=['GET', 'POST'])
-def user():
-    profiles = loadProfiles()
-    responseObj = {}
+@app.route("/new_game", methods=["POST"])
+def new_game():
+    """Start a fresh game and return the initial game token."""
+    data = request.get_json(force=True)
+    title = data.get("title", "").lower().strip()
 
-    print(f"\n\n\nUSER CALLED\n\n\n")
-    print(f"profiles: {profiles}")
-    email = request.args.get('email')
+    if title not in GAME_FILES:
+        return jsonify({"error": f"Unknown game '{title}'", "available": list(GAME_FILES.keys())}), 400
 
-    if (not profiles.get(email, None)):
-        print(f"Profile not found: {email}")
-        profiles[email] = {
-            "email": email,
-            "hike": [],
-            "spell": [],
-            "wish": [],
-            "zork1": [],
-            "zork2": [],
-            "zork3": []
-        }
-        responseObj["newUser"] = True
-    else:
-        print(f"Profile  found: {email}")
-        print(f"Profile: {profiles[email]}")
-        responseObj["newUser"] = False
-        
-    dumpProfiles(profiles, email, None, None)
-    responseObj["profile"] = profiles[email]
-
-    return jsonify(responseObj)
-
-# else, set up a new acc, write it to the pickle, return the new user
-@app.route("/newGame", methods=['GET', 'POST'])
-def newGame():
-    profiles = loadProfiles()
-    
-    print("\n\n New Game Called\n\n")
-    print(f"profiles: {profiles}")
-    email       = request.args.get('email')
-    title       = request.args.get('title')
-    game, title = startGame(title)
-    if ("AutoSave" in profiles[email][title]):
-        os.remove(f"./{email}.{title}.AutoSave")
-        profiles[email][title].remove("AutoSave")
-
+    game = None
+    save_path = None
     try:
-        titleInfo, firstLine = getFirstLines(game)
-        saveGame(profiles, f"{email}.{title}.AutoSave", game)
-    except:
-        print ("import broke somehow...")
-    
-    userProfile = profiles[email]
-    print(f"titleInfo: {titleInfo}, firstLine: {firstLine}, userProfile: {userProfile}")
+        game = spawn_game(title)
+        title_info, first_line = get_intro_text(game)
 
-    returnObj = {
-        "titleInfo":    titleInfo,
-        "firstLine":    firstLine,
-        "userProfile":  profiles[email]
-    }
-    dumpProfiles(profiles, email, title, game)
-    game.terminate()
-    return (jsonify(returnObj))
+        # Save initial state to temp file, read it back as bytes
+        fd, save_path = tempfile.mkstemp(suffix='.qzl')
+        os.close(fd)
+        os.unlink(save_path)  # Remove so dfrotz doesn't see an existing file
+        save_to_file(game, save_path)
 
-# So start should get AutoSave, or the name of some SaveFile
-@app.route("/start", methods=['GET', 'POST'])
-def start():
-    profiles = loadProfiles()
+        with open(save_path, 'rb') as f:
+            save_bytes = f.read()
 
-    print("\n\nStart Called\n\n")
-    email = request.args.get('email')
-    title = request.args.get('title')
-    saveFile  = request.args.get('save')
-    game, title = startGame(title)
-        
-    try: 
-        restoreObj = restoreSave(f"{email}.{title}.{saveFile}", game)
-    except:
-        print ("import broke somehow...")
+        game_token = encode_game_token(title, save_bytes)
 
-    print(f"restoreObj: {restoreObj}")
+        return jsonify({
+            "game_token": game_token,
+            "output": (title_info + "\n" + first_line).strip(),
+            "title": title,
+        })
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        if game:
+            game.terminate(force=True)
+        if save_path and os.path.exists(save_path):
+            os.unlink(save_path)
 
-    titleInfo   =    restoreObj["titleInfo"]
-    firstLine   =    restoreObj["firstLine"]
-    userProfile =    profiles[email]
-    print(f"titleInfo: {titleInfo}, firstLine: {firstLine}, userProfile: {userProfile}")
-    returnObj = {
-        "titleInfo":    restoreObj["titleInfo"],
-        "firstLine":    restoreObj["firstLine"],
-        "userProfile":  profiles[email]
-    }
-    dumpProfiles(profiles, email, title, game)
-    game.terminate()
-    return(jsonify(returnObj))
 
-@app.route("/action", methods=['GET', 'POST'])
+@app.route("/action", methods=["POST"])
 def action():
-    profiles = loadProfiles()
+    """Execute a game command and return the new game token + output."""
+    data = request.get_json(force=True)
+    game_token = data.get("game_token", "")
+    action_cmd = data.get("action", "").strip()
 
-    print("\n\nAction Called\n\n")
-    print(profiles)
-    email       = request.args.get('email')
-    title       = request.args.get('title')
-    action      = request.args.get('action')
+    if not game_token:
+        return jsonify({"error": "game_token is required"}), 400
+    if not action_cmd:
+        return jsonify({"error": "action is required"}), 400
 
-    # start a game, restore the save
-    game, title = startGame(title)
-    
-    areaDesc = restoreSave(f"{email}.{title}.AutoSave", game)
-    
-    print("about to sendline")
-    game.sendline(action)
-    game.expect(['>', pexpect.EOF, pexpect.TIMEOUT], timeout=.2)
-    output = game.before.decode('utf-8')
-    saveGame(profiles, f"{email}.{title}.AutoSave", game)
-    print("sent line, saved")
+    game = None
+    restore_path = None
+    save_path = None
+    try:
+        # Decode the incoming game token
+        title, save_bytes = decode_game_token(game_token)
 
-    resObj = {
-        "cmdOutput":        output,
-        "lookOutput":       areaDesc,
-        "userProfile":      profiles[email]
-    }
+        # Write save bytes to temp file for restore
+        fd, restore_path = tempfile.mkstemp(suffix='.qzl')
+        os.close(fd)
+        with open(restore_path, 'wb') as f:
+            f.write(save_bytes)
 
-    print(f"action response item: {resObj}")
+        # Spawn game, consume intro, restore state
+        game = spawn_game(title)
+        get_intro_text(game)  # must consume intro before restore
+        restore_from_file(game, restore_path)
 
-    # autosave & save to your slot
-    dumpProfiles(profiles, email, title, game)
-    game.terminate()
-    # return whatever the game has given you
-    return(jsonify(resObj))
+        # Execute the player's command.
+        # Some games have interactive mid-command prompts (e.g. HHGG's "score"
+        # pauses for RETURN). We retry on timeout by sending a blank line.
+        game.sendline(action_cmd)
+        output_parts = []
+        game_over = False
+        for _attempt in range(3):
+            index = game.expect([PROMPT, pexpect.EOF, pexpect.TIMEOUT], timeout=PEXPECT_TIMEOUT)
+            output_parts.append(game.before.decode('utf-8', errors='replace'))
+            if index == 0:  # Got the real prompt
+                break
+            elif index == 1:  # EOF — game ended
+                game_over = True
+                break
+            else:  # TIMEOUT — might be an intermediate prompt waiting for input
+                game.sendline("")
+        else:
+            raise RuntimeError("Game did not respond to action")
 
+        output = "\n".join(output_parts).strip()
 
+        if game_over:
+            return jsonify({
+                "game_token": None,
+                "output": output,
+                "title": title,
+                "game_over": True,
+            })
 
-@app.route("/save", methods=['GET', 'POST'])
-def save():
-    profiles = loadProfiles()
+        # Save new state to temp file, read back
+        fd, save_path = tempfile.mkstemp(suffix='.qzl')
+        os.close(fd)
+        os.unlink(save_path)
+        save_to_file(game, save_path)
 
-    print("\n\nSave API Called\n\n")
-    email       = request.args.get('email')
-    title       = request.args.get('title')
-    saveFile    = request.args.get('save')
-    # start a game, restore the save
-    game, title = startGame(title)
-    areaDesc = restoreSave(f"{email}.{title}.AutoSave", game)
-    saveGame(profiles, f"{email}.{title}.{saveFile}", game)
-    dumpProfiles(profiles, email, title, game, saveFile)
-    game.terminate()
-    return (jsonify(profiles[email]))
+        with open(save_path, 'rb') as f:
+            new_save_bytes = f.read()
 
-if __name__ == "__main__":
-    #start()
-    app.run(host='0.0.0.0', port=443)
+        new_game_token = encode_game_token(title, new_save_bytes)
+
+        return jsonify({
+            "game_token": new_game_token,
+            "output": output,
+            "title": title,
+        })
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        if game:
+            game.terminate(force=True)
+        for path in [restore_path, save_path]:
+            if path and os.path.exists(path):
+                os.unlink(path)
