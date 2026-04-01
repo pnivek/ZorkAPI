@@ -1,21 +1,33 @@
 .git
 .gitignore
-.vscode
-__pycache__
-*.pyc
+.dockerignore
+
+# Editor / IDE
+.vscode/
+.vim/
+.viminfo
+.idea/
+*.swp
+*.swo
+
+# Python
+__pycache__/
+*.py[cod]
 *.pyo
 *.pyd
 .Python
-env
+*.egg-info/
+*.egg
+
+# Virtual environments
+env/
 .env
-.venv
-venv
-ENV
-env.bak
-venv.bak
-.idea
-*.iml
+.venv/
+venv/
+
+# OS files
 .DS_Store
-.history
-flask_session/
-profiles.pickle
+
+# Documentation
+README.md
+LICENSE

@@ -8,8 +8,6 @@ All game state is encoded into a **game token** returned with each response. The
 
 The game token is a compressed, signed snapshot of the Z-machine's memory at a given point in the game. It captures everything: position, inventory, score, puzzle progress, and world state. Each action returns a new game token representing the updated state.
 
-Think of it like those old Flash game passwords — except the token actually contains your full save, not just a lookup key.
-
 ```
 Client                                Server
   |                                     |
@@ -30,19 +28,49 @@ Client                                Server
 
 Clients can store multiple game tokens in browser localStorage (or anywhere) to implement save slots, undo, branching — whatever they want.
 
-## Running with Docker
+## Running Locally
 
 ### Prerequisites
-* [Docker](https://docs.docker.com/get-docker/)
+* Python 3.9+
+* [dfrotz](https://davidgriffith.gitlab.io/frotz/) (the headless Frotz interpreter)
 
-### Build and run
+On Debian/Ubuntu:
+```sh
+sudo apt-get install frotz
+```
+
+On macOS:
+```sh
+brew install frotz
+```
+
+### Install and run
+
+```sh
+pip install -r requirements.txt
+GAME_TOKEN_SECRET=your-secret-here gunicorn --bind 0.0.0.0:8000 app:app
+```
+
+Or for development with Flask's built-in server:
+```sh
+pip install -r requirements.txt
+GAME_TOKEN_SECRET=your-secret-here flask run --port 8000
+```
+
+The API will be available at `http://localhost:8000`.
+
+> **Note:** `dfrotz` must be installed at `/usr/games/dfrotz` (the default on Debian/Ubuntu). On macOS or other systems, you may need to symlink it or update the `DFROTZ_PATH` in `app.py`.
+
+## Running with Docker
 
 ```sh
 docker build -t zorkapi .
 docker run -p 8000:8000 -e GAME_TOKEN_SECRET=your-secret-here zorkapi
 ```
 
-The API will be available at `http://localhost:8000`.
+This bundles Python, Frotz, and the game files into a single container — no system dependencies needed.
+
+## Configuration
 
 Set `GAME_TOKEN_SECRET` to any stable string — it's used to sign game tokens so they can't be tampered with. If you don't set it, an ephemeral key is generated (tokens won't survive a server restart).
 
