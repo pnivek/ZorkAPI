@@ -82,19 +82,19 @@ def spawn_game(game_id):
     if game_id not in GAME_FILES:
         raise ValueError(f"Unknown game '{game_id}'. Available: {list(GAME_FILES.keys())}")
     game_path = GAME_FILES[game_id]
-    return pexpect.spawn(f"{DFROTZ_PATH} -mp {game_path}", encoding=None)
+    return pexpect.spawn(f"{DFROTZ_PATH} -mp -Z 0 {game_path}", encoding=None)
 
 
 def get_intro_text(game):
     """Consume and return the intro text dfrotz prints on startup."""
     game.expect('Serial [n|N]umber [0-9]+', timeout=PEXPECT_TIMEOUT)
-    title_info = game.before.decode('utf-8', errors='replace') + game.after.decode('utf-8', errors='replace')
+    title_info = (game.before.decode('utf-8', errors='replace') + game.after.decode('utf-8', errors='replace')).replace('\r', '')
     index = game.expect([PROMPT, pexpect.EOF, pexpect.TIMEOUT], timeout=PEXPECT_TIMEOUT)
     if index == 1:
         raise RuntimeError("Game process ended unexpectedly during intro")
     if index == 2:
         raise RuntimeError("Game did not produce a prompt after intro")
-    first_line = game.before.decode('utf-8', errors='replace')
+    first_line = game.before.decode('utf-8', errors='replace').replace('\r', '')
     return title_info, first_line
 
 
@@ -224,7 +224,11 @@ def action():
         else:
             raise RuntimeError("Game did not respond to action")
 
-        output = "\n".join(output_parts).strip()
+        output = "\n".join(output_parts).replace('\r', '')
+        # Strip the echoed command (PTY echo) from the beginning
+        if output.startswith(action_cmd):
+            output = output[len(action_cmd):]
+        output = output.strip()
 
         if game_over:
             return jsonify({
