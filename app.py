@@ -190,7 +190,7 @@ def action():
     # Intercept Z-machine meta-commands that trigger interactive dialogs.
     # These would break the stateless flow since dfrotz prompts for filenames.
     cmd_lower = action_cmd.lower().strip()
-    if cmd_lower in ("save", "restore", "quit", "q", "restart"):
+    if cmd_lower in ("save", "restore", "quit", "q", "restart", "script", "unscript"):
         title = decode_game_token(game_token)[0]
         if cmd_lower == "save":
             # The game token IS the save — return it unchanged, just like
@@ -207,6 +207,9 @@ def action():
             return jsonify({"game_token": None,
                             "output": "Start a new game with POST /new_game.",
                             "title": title, "game_over": True})
+        if cmd_lower in ("script", "unscript"):
+            return jsonify({"game_token": game_token,
+                            "output": "Transcripts are not supported.", "title": title})
 
     game = None
     restore_path = None
