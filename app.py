@@ -187,6 +187,27 @@ def action():
     if not action_cmd:
         return jsonify({"error": "action is required"}), 400
 
+    # Intercept Z-machine meta-commands that trigger interactive dialogs.
+    # These would break the stateless flow since dfrotz prompts for filenames.
+    cmd_lower = action_cmd.lower().strip()
+    if cmd_lower in ("save", "restore", "quit", "q", "restart"):
+        title = decode_game_token(game_token)[0]
+        if cmd_lower == "save":
+            # The game token IS the save — return it unchanged, just like
+            # the original "Ok." response after saving to a floppy.
+            return jsonify({"game_token": game_token, "output": "Ok.", "title": title})
+        if cmd_lower == "restore":
+            return jsonify({"game_token": game_token,
+                            "output": "Use your saved game tokens to restore.", "title": title})
+        if cmd_lower in ("quit", "q"):
+            return jsonify({"game_token": game_token,
+                            "output": "You can resume anytime with your game token.",
+                            "title": title, "game_over": True})
+        if cmd_lower == "restart":
+            return jsonify({"game_token": None,
+                            "output": "Start a new game with POST /new_game.",
+                            "title": title, "game_over": True})
+
     game = None
     restore_path = None
     save_path = None
