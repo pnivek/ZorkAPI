@@ -231,20 +231,26 @@ def action():
 
         # Execute the player's command.
         # Some games have interactive mid-command prompts (e.g. HHGG's "score"
-        # pauses for RETURN). We retry on timeout by sending a blank line.
+        # pauses for RETURN). On timeout, we check for partial output to
+        # distinguish "waiting for input" from "genuinely stuck", and send
+        # a blank line to nudge it. Retries use a shorter timeout.
         game.sendline(action_cmd)
         output_parts = []
         game_over = False
         for _attempt in range(3):
-            index = game.expect([PROMPT, pexpect.EOF, pexpect.TIMEOUT], timeout=PEXPECT_TIMEOUT)
+            timeout = PEXPECT_TIMEOUT if _attempt == 0 else 1
+            index = game.expect([PROMPT, pexpect.EOF, pexpect.TIMEOUT], timeout=timeout)
             output_parts.append(game.before.decode('utf-8', errors='replace'))
             if index == 0:  # Got the real prompt
                 break
             elif index == 1:  # EOF — game ended
                 game_over = True
                 break
-            else:  # TIMEOUT — might be an intermediate prompt waiting for input
-                game.sendline("")
+            else:  # TIMEOUT
+                if _attempt > 0 and not game.before:
+                    # No new output after a retry — game is genuinely stuck
+                    raise RuntimeError("Game did not respond to action")
+                game.sendline("")  # Nudge past an intermediate prompt
         else:
             raise RuntimeError("Game did not respond to action")
 
